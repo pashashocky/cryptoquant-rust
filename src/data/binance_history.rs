@@ -8,6 +8,8 @@ use s3::bucket::Bucket;
 use s3::creds::Credentials;
 use s3::serde_types::Object;
 
+use crate::utils::config;
+
 macro_rules! pub_enum_str {
     (pub enum $name:ident {
         $($variant:ident),*,
@@ -53,16 +55,6 @@ pub_enum_str! {
 struct File {
     object: Object,
     checksum: Object,
-}
-
-pub struct BinanceHistory {
-    pub bucket: Bucket,
-    pub asset: Asset,
-    pub cadence: Cadence,
-    pub data_type: DataType,
-    pub pair: String,
-    path: String,
-    files: Option<Vec<File>>,
 }
 
 // TODO: Refactor to S3 helpers
@@ -118,6 +110,16 @@ fn collect_files(grouped_objects: HashMap<String, (Option<Object>, Option<Object
         .collect()
 }
 // END
+
+pub struct BinanceHistory {
+    pub bucket: Bucket,
+    pub asset: Asset,
+    pub cadence: Cadence,
+    pub data_type: DataType,
+    pub pair: String,
+    path: String,
+    files: Option<Vec<File>>,
+}
 
 impl BinanceHistory {
     /// Creates a new instance of `BinanceHistory`.
@@ -180,10 +182,11 @@ impl BinanceHistory {
     }
 
     fn create_bucket() -> Result<Bucket> {
+        let config = config::Config::create();
         let region = "ap-northeast-1".parse().context("Failed to parse region")?;
         let credentials =
             Credentials::anonymous().context("Failed to create anonymous credentials")?;
-        let mut bucket = Bucket::new("data.binance.vision", region, credentials)
+        let mut bucket = Bucket::new(config.binance.bucket_name.as_str(), region, credentials)
             .context("Failed to create S3 bucket")?
             .with_path_style();
 
