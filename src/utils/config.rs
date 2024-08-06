@@ -3,7 +3,7 @@ use std::fs;
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct DataConfig {
-    pub dir: Option<String>,
+    pub dir: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
