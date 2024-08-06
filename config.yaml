@@ -1,5 +1,5 @@
 data:
-  dir: "/opt/elmnt/data"  # dir for storing downloaded files
+  dir: "~/elmnt/data"  # dir for storing downloaded files
   
 binance:
-  bucket_name: "binance.data.vision"  # binance historical data s3 bucket name
+  bucket_name: "data.binance.vision"  # binance historical data s3 bucket name

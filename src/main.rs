@@ -14,8 +14,9 @@ async fn main() -> Result<()> {
         .parse_filters(&env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()))
         .init();
 
-    let mut bh = BinanceHistory::new(Asset::Spot, Cadence::Daily, DataType::Trades, "BTCUSDC")?;
+    let mut bh = BinanceHistory::new(Asset::Spot, Cadence::Monthly, DataType::Trades, "BTCUSDC")?;
     bh.get_files().await?;
+    bh.download().await?;
 
     Ok(())
 }
