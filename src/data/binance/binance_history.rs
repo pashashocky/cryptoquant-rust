@@ -55,9 +55,9 @@ impl BinanceHistory {
     pub async fn get_files(&mut self) -> Result<&mut Self> {
         info!("Fetching {:#?}", self.path);
         let objects = self.bucket.list_objects(&self.path).await?;
-        let files = FileCollection::from_objects(objects, ".CHECKSUM");
+        let files = FileCollection::from_objects(objects, ".CHECKSUM")?;
 
-        info!("Fetched {} files.", files.len());
+        info!("Found {} files.", files.len());
 
         self.files = Some(files);
         Ok(self)
