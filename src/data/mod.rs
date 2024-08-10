@@ -1,1 +1,1 @@
-pub mod binance_history;
+pub mod binance;
