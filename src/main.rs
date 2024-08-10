@@ -1,6 +1,7 @@
 pub mod data;
 pub mod utils;
-pub use crate::data::binance_history::*;
+pub use crate::data::binance::binance_history::BinanceHistory;
+pub use crate::data::binance::data_types::{Asset, Cadence, DataType};
 
 use std::env;
 
