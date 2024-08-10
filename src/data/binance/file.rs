@@ -1,8 +1,13 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Result};
+use log::info;
 use s3::serde_types::Object;
-use tokio::fs;
+use sha2::{Digest, Sha256};
+use tokio::{
+    fs,
+    io::{AsyncReadExt, BufReader},
+};
 
 use super::s3::Bucket;
 use crate::utils::config;
@@ -35,6 +40,25 @@ impl File {
         Ok(exists)
     }
 
+    async fn sha256_digest(&self) -> Result<String> {
+        let input = fs::File::open(&self.path).await?;
+        let mut reader = BufReader::new(input);
+
+        let digest = {
+            let mut hasher = Sha256::new();
+            let mut buffer = [0; 1024];
+            loop {
+                let count = reader.read(&mut buffer).await?;
+                if count == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..count]);
+            }
+            hasher.finalize()
+        };
+        Ok(format!("{:X}", digest))
+    }
+
     pub async fn download(&self) -> Result<()> {
         if self.is_downloaded().await? {
             return Ok(());
@@ -46,6 +70,14 @@ impl File {
             .await?;
 
         // TODO: add CHECKSUM check
+        info!(
+            "Calculated [{}] {:?}",
+            self.path.to_string_lossy(),
+            self.sha256_digest().await.unwrap()
+        );
+        let bucket_sha = bucket.bucket.get_object(&self.checksum.key).await?;
+        let bucket_sha = bucket_sha.as_str().unwrap().split(' ').next().unwrap();
+        info!("Read [{}] {:?}", self.checksum.key, bucket_sha);
         Ok(())
     }
 }

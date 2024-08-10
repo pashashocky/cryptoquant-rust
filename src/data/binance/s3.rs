@@ -8,7 +8,7 @@ use tokio::fs;
 use crate::utils::config;
 
 pub struct Bucket {
-    bucket: S3Bucket,
+    pub bucket: S3Bucket,
 }
 
 impl Bucket {
