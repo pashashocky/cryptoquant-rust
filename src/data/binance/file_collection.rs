@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use s3::serde_types::Object;
 use tokio::sync::Semaphore;
 
@@ -18,7 +18,7 @@ impl FileCollection {
     // Assumes objects are stored in pairs
     // - name.zip
     // - name.zip.CHECKSUM
-    pub fn from_objects(objects: Vec<Object>, checksum_suffix: &str) -> Self {
+    pub fn from_objects(objects: Vec<Object>, checksum_suffix: &str) -> Result<Self> {
         // Create a HashMap to group objects by prefix
         let grouped_objects: HashMap<String, (Option<Object>, Option<Object>)> =
             objects.into_iter().fold(HashMap::new(), |mut map, object| {
@@ -42,13 +42,13 @@ impl FileCollection {
         // Create a FileCollection from the grouped objects
         let files = grouped_objects
             .into_iter()
-            .filter_map(|(_, (object, checksum))| match (object, checksum) {
-                (Some(object), Some(checksum)) => File::new(object, checksum).ok(),
-                _ => None,
+            .map(|(_, (object, checksum))| match (object, checksum) {
+                (Some(object), Some(checksum)) => File::new(object, checksum),
+                _ => Err(anyhow!("Missing an object or a checksum")),
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
 
-        FileCollection::new(files)
+        Ok(FileCollection::new(files))
     }
 
     pub fn len(&self) -> usize {
