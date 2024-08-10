@@ -62,12 +62,16 @@ impl File {
     async fn checksum_matches(&self) -> Result<bool> {
         let bucket = Bucket::new().map_err(|e| anyhow!("Failed to create bucket: {}", e))?;
         let bucket_sha_string = bucket.read_object(&self.checksum.key).await?;
-        let bucket_sha = bucket_sha_string.split(' ').next().unwrap().to_lowercase();
-        let disk_sha = self.sha256_digest_lower().await?;
+        let bucket_sha = bucket_sha_string
+            .split(' ')
+            .next()
+            .unwrap()
+            .to_ascii_lowercase();
+        let disk_sha = self.sha256_digest().await?.to_ascii_lowercase();
         Ok(bucket_sha.eq(disk_sha.as_str()))
     }
 
-    async fn sha256_digest_lower(&self) -> Result<String> {
+    async fn sha256_digest(&self) -> Result<String> {
         // TODO: Refactor to utilities
         let input = fs::File::open(&self.path).await?;
         let mut reader = BufReader::new(input);
