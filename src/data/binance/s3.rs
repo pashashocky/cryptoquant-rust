@@ -8,7 +8,7 @@ use tokio::fs;
 use crate::utils::config;
 
 pub struct Bucket {
-    pub bucket: S3Bucket,
+    bucket: S3Bucket,
 }
 
 impl Bucket {
@@ -61,5 +61,9 @@ impl Bucket {
             .flat_map(|result| result.contents)
             .collect::<Vec<Object>>();
         Ok(objects)
+    }
+
+    pub async fn read_object(&self, path: &str) -> Result<String> {
+        Ok(self.bucket.get_object(&path).await?.to_string()?)
     }
 }
