@@ -2,7 +2,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Result};
 use s3::serde_types::Object;
-use tokio::fs;
+use sha2::{Digest, Sha256};
+use tokio::{
+    fs,
+    io::{AsyncReadExt, BufReader},
+};
 
 use super::s3::Bucket;
 use crate::utils::config;
@@ -45,7 +49,45 @@ impl File {
             .get_object_to_file(&self.object.key, &self.path)
             .await?;
 
-        // TODO: add CHECKSUM check
+        if !self.checksum_matches().await? {
+            log::error!(
+                "Checksum does not match {}, removing file!",
+                self.path.to_string_lossy()
+            );
+            fs::remove_file(&self.path).await?;
+        };
         Ok(())
+    }
+
+    async fn checksum_matches(&self) -> Result<bool> {
+        let bucket = Bucket::new().map_err(|e| anyhow!("Failed to create bucket: {}", e))?;
+        let bucket_sha_string = bucket.read_object(&self.checksum.key).await?;
+        let bucket_sha = bucket_sha_string
+            .split(' ')
+            .next()
+            .unwrap()
+            .to_ascii_lowercase();
+        let disk_sha = self.sha256_digest().await?.to_ascii_lowercase();
+        Ok(bucket_sha.eq(disk_sha.as_str()))
+    }
+
+    async fn sha256_digest(&self) -> Result<String> {
+        // TODO: Refactor to utilities
+        let input = fs::File::open(&self.path).await?;
+        let mut reader = BufReader::new(input);
+
+        let digest = {
+            let mut hasher = Sha256::new();
+            let mut buffer = [0; 1024];
+            loop {
+                let count = reader.read(&mut buffer).await?;
+                if count == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..count]);
+            }
+            hasher.finalize()
+        };
+        Ok(format!("{:X}", digest))
     }
 }

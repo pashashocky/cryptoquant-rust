@@ -62,4 +62,8 @@ impl Bucket {
             .collect::<Vec<Object>>();
         Ok(objects)
     }
+
+    pub async fn read_object(&self, path: &str) -> Result<String> {
+        Ok(self.bucket.get_object(&path).await?.to_string()?)
+    }
 }
