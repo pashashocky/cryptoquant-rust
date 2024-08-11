@@ -50,7 +50,7 @@ impl File {
             .await?;
 
         if !self.checksum_matches().await? {
-            log::error!(
+            log::warn!(
                 "Checksum does not match {}, removing file!",
                 self.path.to_string_lossy()
             );
@@ -78,7 +78,7 @@ impl File {
 
         let digest = {
             let mut hasher = Sha256::new();
-            let mut buffer = [0; 1024];
+            let mut buffer = [0; 8192];
             loop {
                 let count = reader.read(&mut buffer).await?;
                 if count == 0 {
