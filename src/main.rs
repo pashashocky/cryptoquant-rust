@@ -15,8 +15,13 @@ async fn main() -> Result<()> {
         .parse_filters(&env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()))
         .init();
 
-    let mut bh = Downloader::new(Asset::Spot, Cadence::Monthly, DataType::Trades, "BTCUSDC")?;
-    bh.get_files().await?;
+    let mut bh = Downloader::new(
+        "USDC Downloader".into(),
+        Asset::Spot,
+        Cadence::Monthly,
+        DataType::Trades,
+    )?
+    .with_pair_ends_with(&["USDC"]);
     bh.download().await?;
 
     Ok(())
