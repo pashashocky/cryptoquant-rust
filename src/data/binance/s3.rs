@@ -5,8 +5,10 @@ use log::info;
 use s3::{creds::Credentials, serde_types::Object, Bucket as S3Bucket};
 use tokio::fs;
 
+use super::downloader::Pair;
 use crate::utils::config;
 
+#[derive(Debug, Clone)]
 pub struct Bucket {
     bucket: S3Bucket,
 }
@@ -41,16 +43,40 @@ impl Bucket {
             .await
             .context("Failed to write object to file")?;
 
-        info!("Downloaded: {} -> {}", key, file_path.to_string_lossy());
-
         Ok(())
     }
 
+    pub async fn list_pairs(&self, path: &str) -> Result<Vec<Pair>> {
+        let path = if path.ends_with('/') {
+            path.to_owned()
+        } else {
+            format!("{}/", path)
+        };
+
+        self.bucket
+            .list(path, Some("/".to_string()))
+            .await
+            .context("Failed to list S3 bucket objects")?
+            .into_iter()
+            .flat_map(|result| result.common_prefixes.unwrap_or_default())
+            .map(|cp| {
+                let prefix = cp.prefix.clone();
+                let pair_name = prefix
+                    .rsplit_terminator('/')
+                    .next()
+                    .unwrap_or_default()
+                    .into();
+                Pair::new(prefix, pair_name)
+            })
+            .collect::<Result<Vec<_>>>()
+    }
+
     pub async fn list_objects(&self, path: &str) -> Result<Vec<Object>> {
-        let mut path = path.to_owned();
-        if !path.ends_with('/') {
-            path.push('/');
-        }
+        let path = if path.ends_with('/') {
+            path.to_owned()
+        } else {
+            format!("{}/", path)
+        };
 
         let objects = self
             .bucket

@@ -12,7 +12,7 @@ macro_rules! pub_enum_str {
         }
 
         impl $name {
-            #[doc = "Returns a string representation of the enum variant."]
+            #[doc = "Returns a lower string representation of the enum variant."]
             fn as_str(&self) -> &'static str {
                 match self {
                     $(Self::$variant => lower!(stringify!($variant))),*

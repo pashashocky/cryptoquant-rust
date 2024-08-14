@@ -55,6 +55,11 @@ impl FileCollection {
         self.files.len()
     }
 
+    pub fn extend(&mut self, other: FileCollection) -> &mut Self {
+        self.files.extend(other.files);
+        self
+    }
+
     pub async fn download(&self) -> Result<()> {
         // TODO: make configurable semaphore
         let semaphore = Arc::new(Semaphore::new(50));
@@ -64,16 +69,19 @@ impl FileCollection {
             let semaphore = semaphore.clone();
             let file = file.clone();
 
-            let jh = tokio::spawn(async move {
-                let _permit = semaphore.acquire().await.unwrap();
+            let handle = tokio::spawn(async move {
+                let _permit = semaphore.acquire().await?;
                 file.download().await
             });
 
-            handles.push(jh);
+            handles.push(handle);
         }
 
         for handle in handles {
-            handle.await??;
+            match handle.await? {
+                Ok(_) => (),
+                Err(e) => log::error!("Could not download file. {}", e),
+            }
         }
         Ok(())
     }
