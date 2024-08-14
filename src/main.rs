@@ -1,7 +1,7 @@
 pub mod data;
 pub mod utils;
-pub use crate::data::binance::binance_history::BinanceHistory;
 pub use crate::data::binance::data_types::{Asset, Cadence, DataType};
+pub use crate::data::binance::downloader::Downloader;
 
 use std::env;
 
@@ -15,7 +15,7 @@ async fn main() -> Result<()> {
         .parse_filters(&env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()))
         .init();
 
-    let mut bh = BinanceHistory::new(Asset::Spot, Cadence::Monthly, DataType::Trades, "BTCUSDC")?;
+    let mut bh = Downloader::new(Asset::Spot, Cadence::Monthly, DataType::Trades, "BTCUSDC")?;
     bh.get_files().await?;
     bh.download().await?;
 

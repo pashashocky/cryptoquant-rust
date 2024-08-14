@@ -8,7 +8,7 @@ use super::data_types::{Asset, Cadence, DataType};
 use super::file_collection::FileCollection;
 use super::s3::Bucket;
 
-pub struct BinanceHistory {
+pub struct Downloader {
     pub bucket: Bucket,
     pub asset: Asset,
     pub cadence: Cadence,
@@ -18,7 +18,7 @@ pub struct BinanceHistory {
     files: Option<FileCollection>,
 }
 
-impl BinanceHistory {
+impl Downloader {
     pub fn new<T: Into<String> + Display>(
         asset: Asset,
         cadence: Cadence,
