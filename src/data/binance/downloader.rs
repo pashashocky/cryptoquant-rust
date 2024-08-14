@@ -1,43 +1,14 @@
-use std::fmt::Display;
 use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
+use futures::future::try_join_all;
 use tokio::sync::Semaphore;
 
 use super::data_types::{Asset, Cadence, DataType};
 use super::file_collection::FileCollection;
+use super::pair::Pair;
 use super::s3::Bucket;
-
-#[derive(Debug, Clone)]
-pub struct Pair {
-    pub prefix: String,
-    pub name: String,
-    bucket: Bucket,
-}
-
-impl Pair {
-    pub fn new<T: Into<String> + Display>(prefix: T, name: T) -> Result<Self> {
-        let bucket = Bucket::new().map_err(|e| anyhow!("Failed to create bucket: {}", e))?;
-        Ok(Pair {
-            prefix: prefix.into(),
-            name: name.into(),
-            bucket,
-        })
-    }
-
-    async fn get_files(&self) -> Result<FileCollection> {
-        let objects = self
-            .bucket
-            .list_objects(&self.prefix)
-            .await
-            .map_err(|e| anyhow!("Could not list bucket objects: {}", e))?;
-        let files = FileCollection::from_objects(objects, ".CHECKSUM")
-            .map_err(|e| anyhow!("Could not create FileCollection from objects: {}", e))?;
-
-        Ok(files)
-    }
-}
 
 pub struct Downloader {
     pub name: String,
@@ -48,8 +19,8 @@ pub struct Downloader {
     pair_filter_excluded: Option<Vec<String>>,
     pair_filter_starts_with: Option<Vec<String>>,
     pair_filter_ends_with: Option<Vec<String>>,
-    pairs: Option<Vec<Pair>>,
-    files: Option<FileCollection>,
+    pairs: Vec<Pair>,
+    files: FileCollection,
 }
 
 impl Downloader {
@@ -70,8 +41,8 @@ impl Downloader {
             pair_filter_excluded: None,
             pair_filter_starts_with: None,
             pair_filter_ends_with: None,
-            pairs: None,
-            files: None,
+            pairs: Vec::new(),
+            files: FileCollection::empty(),
         })
     }
 
@@ -126,72 +97,68 @@ impl Downloader {
         });
 
         log::info!("[{}] Found {} pairs to download.", self.name, pairs.len());
-        self.pairs = Some(pairs);
+        self.pairs = pairs;
         Ok(self)
     }
 
     pub async fn get_files(&mut self) -> Result<&mut Self> {
         // TODO: make configurable semaphore
         let semaphore = Arc::new(Semaphore::new(100));
-        let mut handles = Vec::new();
 
-        if self.pairs.is_none() {
+        if self.pairs.is_empty() {
             self.get_pairs().await?;
         }
 
-        for pair in self.pairs.iter().flatten() {
-            let semaphore = semaphore.clone();
-            let pair = pair.clone();
-            let downloader_name = self.name.clone();
+        let tasks: Vec<_> = self
+            .pairs
+            .iter()
+            .map(|pair| {
+                let semaphore = semaphore.clone();
+                let pair = pair.clone();
+                let downloader_name = self.name.clone();
 
-            let handle = tokio::spawn(async move {
-                let _permit = semaphore.acquire().await?;
-                log::info!(
-                    "[{}] Getting objects for {} from: {}",
-                    downloader_name,
-                    pair.name,
-                    pair.prefix
-                );
+                tokio::spawn(async move {
+                    let _permit = semaphore.acquire().await?;
+                    log::info!(
+                        "[{}] Getting objects for {} from: {}",
+                        downloader_name,
+                        pair.name,
+                        pair.prefix
+                    );
 
-                let files = pair.get_files().await?;
-                log::info!(
-                    "[{}] Discovered {} objects for {} from: {}",
-                    downloader_name,
-                    files.len(),
-                    pair.name,
-                    pair.prefix
-                );
-                Ok::<_, anyhow::Error>(files)
-            });
+                    let files = pair.get_files().await?;
+                    log::info!(
+                        "[{}] Discovered {} objects for {} from: {}",
+                        downloader_name,
+                        files.len(),
+                        pair.name,
+                        pair.prefix
+                    );
+                    Ok::<_, anyhow::Error>(files)
+                })
+            })
+            .collect();
 
-            handles.push(handle);
-        }
-
-        let mut files = FileCollection::new(vec![]);
-        for handle in handles {
-            let pair_files = handle.await??;
-            files.extend(pair_files);
-        }
+        let results = try_join_all(tasks).await?;
+        let files = results.into_iter().flatten().collect::<FileCollection>();
 
         log::info!(
             "[{}] Found a total of {} objects from {} pairs",
             self.name,
             files.len(),
-            self.pairs.as_ref().unwrap().len()
+            self.pairs.len()
         );
-        self.files = Some(files);
+
+        self.files = files;
         Ok(self)
     }
 
     pub async fn download(&mut self) -> Result<()> {
-        if self.files.is_none() {
+        if self.files.is_empty() {
             self.get_files().await?;
         }
 
-        match &self.files {
-            Some(files) => files.download().await?,
-            None => log::info!("No files, call `get_files` first."),
-        }
+        self.files.download().await?;
         Ok(())
     }
 }

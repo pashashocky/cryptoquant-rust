@@ -1,12 +1,12 @@
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Context, Result};
-use log::info;
 use s3::{creds::Credentials, serde_types::Object, Bucket as S3Bucket};
 use tokio::fs;
 
-use super::downloader::Pair;
 use crate::utils::config;
+
+use super::pair::Pair;
 
 #[derive(Debug, Clone)]
 pub struct Bucket {

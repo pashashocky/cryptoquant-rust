@@ -1,16 +1,24 @@
 use std::{collections::HashMap, sync::Arc};
 
+use std::iter::FromIterator;
+
 use anyhow::{anyhow, Result};
+use futures::stream::StreamExt;
 use s3::serde_types::Object;
 use tokio::sync::Semaphore;
 
 use super::file::File;
 
+#[derive(Default)]
 pub struct FileCollection {
     files: Vec<File>,
 }
 
 impl FileCollection {
+    pub fn empty() -> Self {
+        FileCollection::default()
+    }
+
     pub fn new(files: Vec<File>) -> Self {
         FileCollection { files }
     }
@@ -51,38 +59,41 @@ impl FileCollection {
         Ok(FileCollection::new(files))
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+
     pub fn len(&self) -> usize {
         self.files.len()
     }
 
-    pub fn extend(&mut self, other: FileCollection) -> &mut Self {
-        self.files.extend(other.files);
-        self
-    }
-
     pub async fn download(&self) -> Result<()> {
         // TODO: make configurable semaphore
-        let semaphore = Arc::new(Semaphore::new(50));
-        let mut handles = Vec::new();
+        let num_semaphore = 50;
+        let semaphore = Arc::new(Semaphore::new(num_semaphore));
 
-        for file in self.files.iter() {
-            let semaphore = semaphore.clone();
-            let file = file.clone();
+        futures::stream::iter(&self.files)
+            .for_each_concurrent(num_semaphore, |file| {
+                let semaphore = semaphore.clone();
+                async move {
+                    let _permit = semaphore.acquire().await.unwrap();
+                    if let Err(e) = file.download().await {
+                        log::error!("Could not download file. {}", e)
+                    }
+                }
+            })
+            .await;
 
-            let handle = tokio::spawn(async move {
-                let _permit = semaphore.acquire().await?;
-                file.download().await
-            });
-
-            handles.push(handle);
-        }
-
-        for handle in handles {
-            match handle.await? {
-                Ok(_) => (),
-                Err(e) => log::error!("Could not download file. {}", e),
-            }
-        }
         Ok(())
+    }
+}
+
+impl FromIterator<FileCollection> for FileCollection {
+    fn from_iter<T: IntoIterator<Item = FileCollection>>(iter: T) -> Self {
+        let mut files = Vec::new();
+        for collection in iter {
+            files.extend(collection.files);
+        }
+        FileCollection::new(files)
     }
 }
