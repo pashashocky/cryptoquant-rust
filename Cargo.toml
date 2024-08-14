@@ -7,6 +7,7 @@ edition = "2021"
 anyhow = "1.0.86"
 casey = "0.4.0"
 env_logger = "0.11.3"
+futures = "0.3.30"
 log = "0.4.22"
 rust-s3 = "0.34.0" 
 serde = { version = "1.0", features = ["derive"] }
