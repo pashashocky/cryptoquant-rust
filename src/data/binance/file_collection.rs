@@ -97,3 +97,10 @@ impl FromIterator<FileCollection> for FileCollection {
         FileCollection::new(files)
     }
 }
+
+impl FromIterator<File> for FileCollection {
+    fn from_iter<T: IntoIterator<Item = File>>(iter: T) -> Self {
+        let files: Vec<File> = iter.into_iter().collect();
+        FileCollection::new(files)
+    }
+}
