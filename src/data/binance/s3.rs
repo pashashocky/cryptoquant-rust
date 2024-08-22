@@ -60,13 +60,8 @@ impl Bucket {
             .into_iter()
             .flat_map(|result| result.common_prefixes.unwrap_or_default())
             .map(|cp| {
-                let prefix = cp.prefix.clone();
-                let pair_name = prefix
-                    .rsplit_terminator('/')
-                    .next()
-                    .unwrap_or_default()
-                    .into();
-                Pair::new(prefix, pair_name)
+                let pair_name = cp.prefix.rsplit_terminator('/').next().unwrap_or_default();
+                Pair::new(&cp.prefix, pair_name)
             })
             .collect::<Result<Vec<_>>>()
     }

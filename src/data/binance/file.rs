@@ -72,7 +72,7 @@ impl File {
             ));
         };
 
-        log::info!(
+        log::debug!(
             "Downloaded: {} -> {}",
             self.object.key,
             self.path.to_string_lossy()
@@ -83,17 +83,13 @@ impl File {
 
     async fn checksum_matches(&self) -> Result<bool> {
         let bucket_sha_string = self.bucket.read_object(&self.checksum.key).await?;
-        let bucket_sha = bucket_sha_string
-            .split(' ')
-            .next()
-            .unwrap()
-            .to_ascii_lowercase();
-        let disk_sha = self.sha256_digest().await?.to_ascii_lowercase();
-        Ok(bucket_sha.eq(disk_sha.as_str()))
+        let bucket_sha = bucket_sha_string.split(' ').next().unwrap();
+        let disk_sha = self.sha256_digest().await?;
+        Ok(bucket_sha.eq_ignore_ascii_case(&disk_sha))
     }
 
+    // TODO: Refactor to utilities
     async fn sha256_digest(&self) -> Result<String> {
-        // TODO: Refactor to utilities
         let input = fs::File::open(&self.path).await?;
         let mut reader = BufReader::new(input);
 

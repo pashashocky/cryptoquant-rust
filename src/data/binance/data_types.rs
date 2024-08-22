@@ -66,6 +66,8 @@ mod tests {
     #[test]
     fn test_as_str() {
         assert_eq!(Asset::Futures.as_str(), "futures");
+        assert_eq!(Asset::Option.as_str(), "option");
+        assert_eq!(Asset::Spot.as_str(), "spot");
         assert_eq!(Cadence::Daily.as_str(), "daily");
         assert_eq!(DataType::AggTrades.as_str(), "aggtrades");
     }
