@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::{collections::HashMap, sync::Arc};
 
 use std::iter::FromIterator;
@@ -5,6 +6,7 @@ use std::iter::FromIterator;
 use anyhow::{anyhow, Result};
 use futures::stream::StreamExt;
 use s3::serde_types::Object;
+use tokio::sync::mpsc::Sender;
 use tokio::sync::Semaphore;
 
 use super::file::File;
@@ -30,11 +32,11 @@ impl FileCollection {
         // Create a HashMap to group objects by prefix
         let grouped_objects: HashMap<String, (Option<Object>, Option<Object>)> =
             objects.into_iter().fold(HashMap::new(), |mut map, object| {
-                let key = object.key.clone();
+                let key = &object.key;
                 let prefix = if key.ends_with(checksum_suffix) {
                     &key[..key.len() - checksum_suffix.len()]
                 } else {
-                    &key
+                    key
                 };
 
                 let entry = map.entry(prefix.to_string()).or_default();
@@ -67,18 +69,24 @@ impl FileCollection {
         self.files.len()
     }
 
-    pub async fn download(&self) -> Result<()> {
-        // TODO: make configurable semaphore
+    // TODO: make configurable semaphore
+    pub async fn download(&self, tx: Option<Sender<PathBuf>>) -> Result<()> {
         let num_semaphore = 50;
         let semaphore = Arc::new(Semaphore::new(num_semaphore));
 
         futures::stream::iter(&self.files)
             .for_each_concurrent(num_semaphore, |file| {
                 let semaphore = semaphore.clone();
+                let tx = tx.clone();
                 async move {
                     let _permit = semaphore.acquire().await.unwrap();
-                    if let Err(e) = file.download().await {
-                        log::error!("Could not download file. {}", e)
+                    match file.download().await {
+                        Ok(_) => {
+                            if let Some(tx) = tx {
+                                tx.send(file.path.clone()).await.unwrap()
+                            }
+                        }
+                        Err(e) => log::error!("Could not download file. {}", e),
                     }
                 }
             })

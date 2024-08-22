@@ -1,20 +1,22 @@
+use std::sync::Arc;
+
 use anyhow::{anyhow, Result};
 
 use super::{file_collection::FileCollection, s3::Bucket};
 
 #[derive(Debug, Clone)]
 pub struct Pair {
-    pub prefix: String,
-    pub name: String,
+    pub prefix: Arc<str>,
+    pub name: Arc<str>,
     bucket: Bucket,
 }
 
 impl Pair {
-    pub fn new<T: Into<String>>(prefix: T, name: T) -> Result<Self> {
+    pub fn new(prefix: &str, name: &str) -> Result<Self> {
         let bucket = Bucket::new().map_err(|e| anyhow!("Failed to create bucket: {}", e))?;
         Ok(Pair {
-            prefix: prefix.into(),
-            name: name.into(),
+            prefix: Arc::from(prefix),
+            name: Arc::from(name),
             bucket,
         })
     }

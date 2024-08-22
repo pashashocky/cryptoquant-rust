@@ -1,8 +1,9 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use futures::future::try_join_all;
+use tokio::sync::mpsc::Sender;
 use tokio::sync::Semaphore;
 
 use super::data_types::{Asset, Cadence, DataType};
@@ -11,7 +12,7 @@ use super::pair::Pair;
 use super::s3::Bucket;
 
 pub struct Downloader {
-    pub name: String,
+    pub name: Arc<str>,
     pub asset: Asset,
     pub cadence: Cadence,
     pub data_type: DataType,
@@ -24,16 +25,21 @@ pub struct Downloader {
 }
 
 impl Downloader {
-    pub fn new(name: String, asset: Asset, cadence: Cadence, data_type: DataType) -> Result<Self> {
+    pub fn new(name: &str, asset: Asset, cadence: Cadence, data_type: DataType) -> Result<Self> {
         match asset {
             Asset::Futures | Asset::Option => todo!("Futures | Option not implemented."),
             Asset::Spot => (),
         }
 
+        match data_type {
+            DataType::AggTrades | DataType::KLines => todo!("AggTrades | Klines not implemented."),
+            DataType::Trades => (),
+        }
+
         let bucket = Bucket::new().map_err(|e| anyhow!("Failed to create bucket: {}", e))?;
 
         Ok(Self {
-            name,
+            name: Arc::from(name),
             asset,
             cadence,
             data_type,
@@ -72,6 +78,7 @@ impl Downloader {
             .to_string_lossy()
             .to_string();
 
+        log::info!("[{}] Fetching pairs from: {}", self.name, &path);
         let mut pairs = self.bucket.list_pairs(&path).await?;
 
         pairs.retain(|p| {
@@ -107,13 +114,12 @@ impl Downloader {
         Ok(self)
     }
 
+    // TODO: make configurable semaphore
     pub async fn get_files(&mut self) -> Result<&mut Self> {
-        // TODO: make configurable semaphore
         let semaphore = Arc::new(Semaphore::new(100));
 
-        if self.pairs.is_empty() {
-            self.get_pairs().await?;
-        }
+        // new pairs can be introduced between long running jobs
+        self.get_pairs().await?;
 
         let tasks: Vec<_> = self
             .pairs
@@ -159,12 +165,15 @@ impl Downloader {
         Ok(self)
     }
 
-    pub async fn download(&mut self) -> Result<()> {
-        if self.files.is_empty() {
-            self.get_files().await?;
-        }
+    pub async fn download_with_channel(&mut self, tx: Option<Sender<PathBuf>>) -> Result<()> {
+        // new files can be introduced between long running jobs
+        self.get_files().await?;
 
-        self.files.download().await?;
+        self.files.download(tx).await?;
         Ok(())
+    }
+
+    pub async fn download(&mut self) -> Result<()> {
+        self.download_with_channel(None).await
     }
 }
