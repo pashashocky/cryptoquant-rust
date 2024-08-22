@@ -75,6 +75,8 @@ impl Downloader {
         let mut pairs = self.bucket.list_pairs(&path).await?;
 
         pairs.retain(|p| {
+            let mut has_filters = false;
+
             if let Some(excluded_filters) = &self.pair_filter_excluded {
                 if excluded_filters.iter().any(|f| p.name.contains(f)) {
                     return false;
@@ -82,18 +84,22 @@ impl Downloader {
             }
 
             if let Some(starts_with_filters) = &self.pair_filter_starts_with {
+                has_filters = true;
                 if starts_with_filters.iter().any(|f| p.name.starts_with(f)) {
                     return true;
                 }
             }
 
             if let Some(ends_with_filters) = &self.pair_filter_ends_with {
+                has_filters = true;
                 if ends_with_filters.iter().any(|f| p.name.ends_with(f)) {
                     return true;
                 }
             }
 
-            false
+            // If we have filters, we want the default to exclude ==> false
+            // If no filters, we want the default to return all ==> true
+            !has_filters
         });
 
         log::info!("[{}] Found {} pairs to download.", self.name, pairs.len());
