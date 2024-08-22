@@ -1,7 +1,10 @@
-use std::path::{Path, PathBuf};
+use std::{ops::Deref, path::Path, sync::Arc};
 
 use anyhow::{anyhow, Context, Result};
-use s3::serde_types::Object;
+use serde::{
+    de::{self, Unexpected},
+    Deserialize, Deserializer, Serialize,
+};
 use sha2::{Digest, Sha256};
 use tokio::{
     fs,
@@ -11,29 +14,64 @@ use tokio::{
 use super::s3::Bucket;
 use crate::utils::config;
 
-#[derive(Clone)]
+// https://github.com/BurntSushi/rust-csv/issues/135#issuecomment-1058584727
+fn bool_from_str<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match String::deserialize(deserializer)?.as_str() {
+        "true" | "True" => Ok(true),
+        "false" | "False" => Ok(false),
+        other => Err(de::Error::invalid_value(
+            Unexpected::Str(other),
+            &"Must be truthy (true, True) or falsey (false, False)",
+        )),
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Row {
+    /// Trade id
+    pub id: u32,
+    /// Execution price in DENOM
+    pub price: f32,
+    /// Trade quantity in BASE
+    pub qty: f32,
+    /// Notional value; price * qty
+    pub quote_qty: f32,
+    /// Trade time in unix epoch to ms
+    pub time: u64,
+    /// Is the buyer the maker in this trade ==> true is a short trade
+    #[serde(deserialize_with = "bool_from_str")]
+    pub is_buyer_maker: bool,
+    /// Was this the best price available on the exchange?
+    #[serde(deserialize_with = "bool_from_str")]
+    pub is_best_match: bool,
+}
+
+#[derive(Debug, Clone)]
 pub struct File {
-    bucket: Bucket,
-    checksum: Object,
-    object: Object,
-    pub path: PathBuf,
+    pub pair: Arc<str>,
+    checksum_key: Arc<str>,
+    object_key: Arc<str>,
+    pub path: Arc<Path>,
 }
 
 impl File {
-    pub fn new(object: Object, checksum: Object) -> Result<Self> {
+    pub fn new(pair: &str, object_key: &str, checksum_key: &str) -> Result<Self> {
         let config = config::Config::create();
-        let bucket = Bucket::new().map_err(|e| anyhow!("Failed to create bucket: {}", e))?;
         let data_dir = Path::new(config.data.dir.trim_end_matches('/'));
-        let path = data_dir.join(object.key.replace("data/", "binance/"));
+
+        let path = data_dir.join(object_key.replace("data/", "binance/"));
         let path = shellexpand::full(path.to_str().unwrap())
             .map_err(|e| anyhow!("Failed to expand path: {}", e))?;
         let path = Path::new(path.as_ref()).to_path_buf();
 
         Ok(File {
-            bucket,
-            object,
-            checksum,
-            path,
+            pair: Arc::from(pair),
+            object_key: Arc::from(object_key),
+            checksum_key: Arc::from(checksum_key),
+            path: Arc::from(path),
         })
     }
 
@@ -53,13 +91,14 @@ impl File {
         }
 
         // TODO: download into /tmp first and move to prevent unfinished downloads
-        self.bucket
-            .get_object_to_file(&self.object.key, &self.path)
+        let bucket = Bucket::new().map_err(|e| anyhow!("Failed to create bucket: {}", e))?;
+        bucket
+            .get_object_to_file(&self.object_key, self.path.deref())
             .await
             .with_context(|| {
                 format!(
                     "Could not download object to file: {} -> {}",
-                    self.object.key,
+                    self.object_key,
                     self.path.to_string_lossy()
                 )
             })?;
@@ -74,7 +113,7 @@ impl File {
 
         log::debug!(
             "Downloaded: {} -> {}",
-            self.object.key,
+            self.object_key,
             self.path.to_string_lossy()
         );
 
@@ -82,7 +121,8 @@ impl File {
     }
 
     async fn checksum_matches(&self) -> Result<bool> {
-        let bucket_sha_string = self.bucket.read_object(&self.checksum.key).await?;
+        let bucket = Bucket::new().map_err(|e| anyhow!("Failed to create bucket: {}", e))?;
+        let bucket_sha_string = bucket.read_object(&self.checksum_key).await?;
         let bucket_sha = bucket_sha_string.split(' ').next().unwrap();
         let disk_sha = self.sha256_digest().await?;
         Ok(bucket_sha.eq_ignore_ascii_case(&disk_sha))

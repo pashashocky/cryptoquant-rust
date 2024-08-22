@@ -3,3 +3,7 @@ data:
   
 binance:
   bucket_name: "data.binance.vision"  # binance historical data s3 bucket name
+
+clickhouse:
+  url: "http://localhost:8123"
+  user: "default"

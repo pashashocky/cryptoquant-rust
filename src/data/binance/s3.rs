@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::Path;
 
 use anyhow::{anyhow, Context, Result};
 use s3::{creds::Credentials, serde_types::Object, Bucket as S3Bucket};
@@ -8,7 +8,7 @@ use crate::utils::config;
 
 use super::pair::Pair;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Bucket {
     bucket: S3Bucket,
 }
@@ -27,7 +27,7 @@ impl Bucket {
         Ok(Bucket { bucket })
     }
 
-    pub async fn get_object_to_file(&self, key: &str, file_path: &PathBuf) -> Result<()> {
+    pub async fn get_object_to_file(&self, key: &str, file_path: &Path) -> Result<()> {
         // create parent dirs
         match file_path.parent() {
             Some(path) if !path.exists() => fs::create_dir_all(path)

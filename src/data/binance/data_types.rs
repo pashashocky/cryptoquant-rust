@@ -6,7 +6,7 @@ macro_rules! pub_enum_str {
     (pub enum $name:ident {
         $($variant:ident),*,
     }) => {
-        #[derive(Debug, PartialEq, Eq)]
+        #[derive(Debug, PartialEq, Eq, Clone)]
         pub enum $name {
             $($variant),*
         }

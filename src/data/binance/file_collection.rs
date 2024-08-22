@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::{collections::HashMap, sync::Arc};
 
 use std::iter::FromIterator;
@@ -11,7 +10,7 @@ use tokio::sync::Semaphore;
 
 use super::file::File;
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct FileCollection {
     files: Vec<File>,
 }
@@ -28,7 +27,7 @@ impl FileCollection {
     // Assumes objects are stored in pairs
     // - name.zip
     // - name.zip.CHECKSUM
-    pub fn from_objects(objects: Vec<Object>, checksum_suffix: &str) -> Result<Self> {
+    pub fn from_objects(pair: &str, objects: Vec<Object>, checksum_suffix: &str) -> Result<Self> {
         // Create a HashMap to group objects by prefix
         let grouped_objects: HashMap<String, (Option<Object>, Option<Object>)> =
             objects.into_iter().fold(HashMap::new(), |mut map, object| {
@@ -53,7 +52,7 @@ impl FileCollection {
         let files = grouped_objects
             .into_iter()
             .map(|(_, (object, checksum))| match (object, checksum) {
-                (Some(object), Some(checksum)) => File::new(object, checksum),
+                (Some(object), Some(checksum)) => File::new(pair, &object.key, &checksum.key),
                 _ => Err(anyhow!("Missing an object or a checksum")),
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -61,16 +60,12 @@ impl FileCollection {
         Ok(FileCollection::new(files))
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.files.is_empty()
-    }
-
     pub fn len(&self) -> usize {
         self.files.len()
     }
 
     // TODO: make configurable semaphore
-    pub async fn download(&self, tx: Option<Sender<PathBuf>>) -> Result<()> {
+    pub async fn download(&self, tx: Option<Sender<File>>) -> Result<()> {
         let num_semaphore = 50;
         let semaphore = Arc::new(Semaphore::new(num_semaphore));
 
@@ -83,7 +78,7 @@ impl FileCollection {
                     match file.download().await {
                         Ok(_) => {
                             if let Some(tx) = tx {
-                                tx.send(file.path.clone()).await.unwrap()
+                                tx.send(file.clone()).await.unwrap()
                             }
                         }
                         Err(e) => log::error!("Could not download file. {}", e),

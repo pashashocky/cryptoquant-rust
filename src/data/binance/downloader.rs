@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
@@ -7,16 +7,17 @@ use tokio::sync::mpsc::Sender;
 use tokio::sync::Semaphore;
 
 use super::data_types::{Asset, Cadence, DataType};
+use super::file::File;
 use super::file_collection::FileCollection;
 use super::pair::Pair;
 use super::s3::Bucket;
 
+#[derive(Clone)]
 pub struct Downloader {
     pub name: Arc<str>,
     pub asset: Asset,
     pub cadence: Cadence,
     pub data_type: DataType,
-    bucket: Bucket,
     pair_filter_excluded: Option<Vec<String>>,
     pair_filter_starts_with: Option<Vec<String>>,
     pair_filter_ends_with: Option<Vec<String>>,
@@ -36,14 +37,11 @@ impl Downloader {
             DataType::Trades => (),
         }
 
-        let bucket = Bucket::new().map_err(|e| anyhow!("Failed to create bucket: {}", e))?;
-
         Ok(Self {
             name: Arc::from(name),
             asset,
             cadence,
             data_type,
-            bucket,
             pair_filter_excluded: None,
             pair_filter_starts_with: None,
             pair_filter_ends_with: None,
@@ -79,7 +77,8 @@ impl Downloader {
             .to_string();
 
         log::info!("[{}] Fetching pairs from: {}", self.name, &path);
-        let mut pairs = self.bucket.list_pairs(&path).await?;
+        let bucket = Bucket::new().map_err(|e| anyhow!("Failed to create bucket: {}", e))?;
+        let mut pairs = bucket.list_pairs(&path).await?;
 
         pairs.retain(|p| {
             let mut has_filters = false;
@@ -165,7 +164,7 @@ impl Downloader {
         Ok(self)
     }
 
-    pub async fn download_with_channel(&mut self, tx: Option<Sender<PathBuf>>) -> Result<()> {
+    pub async fn download_with_channel(&mut self, tx: Option<Sender<File>>) -> Result<()> {
         // new files can be introduced between long running jobs
         self.get_files().await?;
 

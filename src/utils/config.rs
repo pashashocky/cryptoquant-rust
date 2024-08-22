@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::fs;
+use std::{env, fs};
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct DataConfig {
@@ -11,18 +11,19 @@ pub struct BinanceConfig {
     pub bucket_name: String,
 }
 
-impl Default for BinanceConfig {
-    fn default() -> Self {
-        BinanceConfig {
-            bucket_name: "data.binance.vision".into(),
-        }
-    }
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ClickhouseConfig {
+    pub url: String,
+    pub user: String,
+    #[serde(default = "default_ch_password")]
+    pub password: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Config {
     pub data: DataConfig,
     pub binance: BinanceConfig,
+    pub clickhouse: ClickhouseConfig,
 }
 
 impl Config {
@@ -35,4 +36,8 @@ impl Config {
 
         config
     }
+}
+
+fn default_ch_password() -> String {
+    env::var("CLICKHOUSE_PASSWORD").unwrap_or_default()
 }
