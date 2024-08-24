@@ -1,18 +1,15 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use futures::future::try_join_all;
-use tokio::sync::mpsc::Sender;
 use tokio::sync::Semaphore;
 
 use super::data_types::{Asset, Cadence, DataType};
-use super::file::File;
 use super::file_collection::FileCollection;
 use super::pair::Pair;
 use super::s3::Bucket;
 
-#[derive(Clone)]
 pub struct Downloader {
     pub name: Arc<str>,
     pub asset: Asset,
@@ -21,8 +18,6 @@ pub struct Downloader {
     pair_filter_excluded: Option<Vec<String>>,
     pair_filter_starts_with: Option<Vec<String>>,
     pair_filter_ends_with: Option<Vec<String>>,
-    pairs: Vec<Pair>,
-    files: FileCollection,
 }
 
 impl Downloader {
@@ -45,8 +40,6 @@ impl Downloader {
             pair_filter_excluded: None,
             pair_filter_starts_with: None,
             pair_filter_ends_with: None,
-            pairs: Vec::new(),
-            files: FileCollection::empty(),
         })
     }
 
@@ -68,16 +61,16 @@ impl Downloader {
         self
     }
 
-    pub async fn get_pairs(&mut self) -> Result<&mut Self> {
+    pub async fn get_pairs(&self) -> Result<Vec<Pair>> {
         let path = Path::new("data")
-            .join(&self.asset)
-            .join(&self.cadence)
-            .join(&self.data_type)
+            .join(self.asset)
+            .join(self.cadence)
+            .join(self.data_type)
             .to_string_lossy()
             .to_string();
 
         log::info!("[{}] Fetching pairs from: {}", self.name, &path);
-        let bucket = Bucket::new().map_err(|e| anyhow!("Failed to create bucket: {}", e))?;
+        let bucket = Bucket::new()?;
         let mut pairs = bucket.list_pairs(&path).await?;
 
         pairs.retain(|p| {
@@ -109,19 +102,13 @@ impl Downloader {
         });
 
         log::info!("[{}] Found {} pairs to download.", self.name, pairs.len());
-        self.pairs = pairs;
-        Ok(self)
+        Ok(pairs)
     }
 
     // TODO: make configurable semaphore
-    pub async fn get_files(&mut self) -> Result<&mut Self> {
+    pub async fn get_files(&self, pairs: &[Pair]) -> Result<FileCollection> {
         let semaphore = Arc::new(Semaphore::new(100));
-
-        // new pairs can be introduced between long running jobs
-        self.get_pairs().await?;
-
-        let tasks: Vec<_> = self
-            .pairs
+        let tasks: Vec<_> = pairs
             .iter()
             .map(|pair| {
                 let semaphore = semaphore.clone();
@@ -157,22 +144,20 @@ impl Downloader {
             "[{}] Found a total of {} objects from {} pairs",
             self.name,
             files.len(),
-            self.pairs.len()
+            pairs.len()
         );
 
-        self.files = files;
-        Ok(self)
+        Ok(files)
     }
+}
 
-    pub async fn download_with_channel(&mut self, tx: Option<Sender<File>>) -> Result<()> {
-        // new files can be introduced between long running jobs
-        self.get_files().await?;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils;
 
-        self.files.download(tx).await?;
-        Ok(())
-    }
-
-    pub async fn download(&mut self) -> Result<()> {
-        self.download_with_channel(None).await
+    #[test]
+    fn downloader_is_normal() {
+        test_utils::is_normal::<Downloader>();
     }
 }

@@ -1,21 +1,51 @@
+use std::ops::AddAssign;
+use std::time::Instant;
 use std::{sync::Arc, time::Duration};
 
 use anyhow::{anyhow, Context, Result};
-use async_zip::base::read::seek::ZipFileReader;
+use clickhouse::inserter::{Inserter, Quantities};
 use clickhouse::{sql, Client, Row};
 use serde::{Deserialize, Serialize};
-use tokio::{fs::File, io::BufReader, sync::mpsc};
+use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
-use tokio_util::compat::FuturesAsyncReadCompatExt;
 
 use crate::{data::binance::file::Row as FileRow, utils::config, Downloader};
 
+use super::binance::file::File;
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct AddableQuantities {
+    /// The number of uncompressed bytes.
+    pub bytes: u64,
+    /// The number for rows (calls of [`Inserter::write`]).
+    pub rows: u64,
+    /// The number of nonempty transactions (calls of [`Inserter::commit`]).
+    pub transactions: u64,
+}
+
+impl AddAssign<Quantities> for AddableQuantities {
+    fn add_assign(&mut self, rhs: Quantities) {
+        self.bytes += rhs.bytes;
+        self.rows += rhs.rows;
+        self.transactions += rhs.transactions;
+    }
+}
+
+impl AddAssign for AddableQuantities {
+    fn add_assign(&mut self, rhs: Self) {
+        self.bytes += rhs.bytes;
+        self.rows += rhs.rows;
+        self.transactions += rhs.transactions;
+    }
+}
+
 #[derive(Debug, Row, Serialize, Deserialize)]
-pub struct CHRow<'a> {
+pub struct CHRow {
     /// Trade time in unix epoch to ms
     time: u64,
     /// Name of the pair traded
-    pair: &'a str,
+    // Owned String is faster here than lifetime bound
+    pair: String,
     /// Long=true; Short=False
     side: bool,
     /// Execution price in DENOM
@@ -30,11 +60,11 @@ pub struct CHRow<'a> {
     id: u32,
 }
 
-impl<'a> CHRow<'a> {
-    fn new(pair: &'a str, row: FileRow) -> Self {
+impl CHRow {
+    fn new(pair: &str, row: FileRow) -> Self {
         CHRow {
             time: row.time,
-            pair,
+            pair: pair.to_owned(),
             side: !row.is_buyer_maker,
             price: row.price,
             qty: row.qty,
@@ -48,7 +78,7 @@ impl<'a> CHRow<'a> {
 pub struct Table {
     client: Client,
     name: Arc<str>,
-    downloader: Downloader,
+    downloader: Arc<Downloader>,
 }
 
 impl Table {
@@ -69,17 +99,17 @@ impl Table {
         Ok(Table {
             client,
             name: name.to_ascii_uppercase().into(),
-            downloader,
+            downloader: Arc::new(downloader),
         })
     }
 
     pub async fn create(&self) -> Result<()> {
         // TODO: Remove
-        // self.client
-        //     .query("DROP TABLE IF EXISTS ?")
-        //     .bind(sql::Identifier(&self.name))
-        //     .execute()
-        //     .await?;
+        self.client
+            .query("DROP TABLE IF EXISTS ?")
+            .bind(sql::Identifier(&self.name))
+            .execute()
+            .await?;
         self.client
             .query(
                 "
@@ -105,85 +135,95 @@ impl Table {
             .map_err(|e| anyhow!("Could not create table: {}", e))
     }
 
-    // TODO: WIP this needs to be refactored... how?
     pub async fn index(&self) -> Result<()> {
         // make sure table exists
         self.create().await?;
 
         let (tx, mut rx) = mpsc::channel(10);
-        let mut downloader = self.downloader.clone();
+        let downloader = Arc::clone(&self.downloader);
 
+        // fetch files
         tokio::spawn(async move {
-            downloader.download_with_channel(Some(tx)).await?;
+            let pairs = downloader.get_pairs().await?;
+            let files = downloader.get_files(&pairs).await?;
+            files.download_with_channel(Some(tx)).await?;
             Ok::<_, anyhow::Error>(())
         });
 
-        let mut i = 0;
+        let mut inserter = self
+            .client
+            .inserter::<CHRow>(&self.name)?
+            .with_max_rows(100_000)
+            .with_period(Some(Duration::from_secs(15)));
+
+        let mut file_count = 0;
+        let mut stats = AddableQuantities::default();
         while let Some(file) = rx.recv().await {
-            let mut inserter = self
-                .client
-                .inserter::<CHRow>(&self.name)?
-                .with_max_rows(100_000)
-                .with_period(Some(Duration::from_secs(15)));
-
-            log::debug!(
-                "Indexing pair={}; file={}",
-                file.pair,
-                file.path.to_string_lossy()
-            );
-
-            // TODO: How do I refactor this well?
-            let mut file_reader = BufReader::new(File::open(file.path).await?);
-            let mut zip = ZipFileReader::with_tokio(&mut file_reader).await?;
-            for entry in zip.file().entries() {
-                entry.filename().as_str()?;
-            }
-            for index in 0..zip.file().entries().len() {
-                // TODO: Verify the correct filename from zip
-                let entry = zip.file().entries().get(index).unwrap();
-                log::info!("Zip File: {}", entry.filename().as_str()?);
-                let mut reader = zip
-                    .reader_without_entry(index)
-                    .await
-                    .context("Failed to read ZipEntry")?
-                    .compat();
-
-                let mut rdr = csv_async::AsyncReaderBuilder::new()
-                    .has_headers(false)
-                    .create_deserializer(&mut reader);
-
-                // TODO: How do I refactor this so that Row can be specified by File?
-                let mut records = rdr.deserialize::<FileRow>();
-                while let Some(row) = records.next().await {
-                    let row = row?;
-                    inserter.write(&CHRow::new(&file.pair, row))?;
-                }
-                // commit file
-                let stats = inserter.commit().await?;
-                if stats.rows > 0 {
-                    log::info!(
-                        "[Commit] {} bytes, {} rows, {} transactions have been inserted",
-                        stats.bytes,
-                        stats.rows,
-                        stats.transactions,
-                    );
-                }
-            }
-            let stats = inserter.end().await?;
-            if stats.rows > 0 {
-                log::info!(
-                    "[Flush] {} bytes, {} rows, {} transactions have been inserted",
-                    stats.bytes,
-                    stats.rows,
-                    stats.transactions,
-                );
-            }
-            i += 1;
+            stats += self.index_file(&mut inserter, file).await?;
+            file_count += 1;
         }
 
-        log::info!("Total indexed: {}", i);
-
+        stats += inserter.end().await?;
+        if stats.rows > 0 {
+            log::info!(
+                "[{}] Inserter summary: {} files, {} bytes, {} rows, {} transactions have been inserted",
+                self.name,
+                file_count,
+                stats.bytes,
+                stats.rows,
+                stats.transactions,
+            );
+        }
         Ok(())
+    }
+
+    pub async fn index_file(
+        &self,
+        inserter: &mut Inserter<CHRow>,
+        file: File,
+    ) -> Result<AddableQuantities> {
+        log::info!(
+            "[{}] Indexing pair={}; file={}",
+            self.name,
+            file.pair,
+            file.path.to_string_lossy()
+        );
+
+        let mut tx: u16 = 0;
+        let now = Instant::now();
+        let mut stats = AddableQuantities::default();
+        let mut records = file.records().await?;
+
+        // This works, but this is slow because it's a single indexing thread
+        while let Some(row) = records.next().await {
+            let row = row?;
+            inserter.write(&CHRow::new(&file.pair, row))?;
+            tx += 1;
+
+            // insert in batches of 1000
+            if tx.rem_euclid(1000) == 0 {
+                let local_stats = inserter.commit().await?;
+                if local_stats.rows > 0 {
+                    log::debug!(
+                        "[{}] [Commit] {} bytes, {} rows, {} transactions have been inserted",
+                        self.name,
+                        local_stats.bytes,
+                        local_stats.rows,
+                        local_stats.transactions,
+                    );
+                }
+                stats += local_stats;
+                tx = 0;
+            }
+        }
+        log::debug!(
+            "[{}] Indexed in: {:.2?}; pair={}; file={}",
+            self.name,
+            now.elapsed(),
+            file.pair,
+            file.path.to_string_lossy()
+        );
+        Ok(stats)
     }
 }
 

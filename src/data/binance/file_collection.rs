@@ -55,7 +55,8 @@ impl FileCollection {
                 (Some(object), Some(checksum)) => File::new(pair, &object.key, &checksum.key),
                 _ => Err(anyhow!("Missing an object or a checksum")),
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| anyhow!("Could not create FileCollection from objects: {}", e))?;
 
         Ok(FileCollection::new(files))
     }
@@ -65,7 +66,7 @@ impl FileCollection {
     }
 
     // TODO: make configurable semaphore
-    pub async fn download(&self, tx: Option<Sender<File>>) -> Result<()> {
+    pub async fn download_with_channel(&self, tx: Option<Sender<File>>) -> Result<()> {
         let num_semaphore = 50;
         let semaphore = Arc::new(Semaphore::new(num_semaphore));
 
@@ -93,10 +94,10 @@ impl FileCollection {
 
 impl FromIterator<FileCollection> for FileCollection {
     fn from_iter<T: IntoIterator<Item = FileCollection>>(iter: T) -> Self {
-        let mut files = Vec::new();
-        for collection in iter {
-            files.extend(collection.files);
-        }
+        let files = iter.into_iter().fold(Vec::new(), |mut acc, collection| {
+            acc.extend(collection.files);
+            acc
+        });
         FileCollection::new(files)
     }
 }
@@ -105,5 +106,16 @@ impl FromIterator<File> for FileCollection {
     fn from_iter<T: IntoIterator<Item = File>>(iter: T) -> Self {
         let files: Vec<File> = iter.into_iter().collect();
         FileCollection::new(files)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils;
+
+    #[test]
+    fn file_collection_is_normal() {
+        test_utils::is_normal::<FileCollection>();
     }
 }
