@@ -6,7 +6,7 @@ macro_rules! pub_enum_str {
     (pub enum $name:ident {
         $($variant:ident),*,
     }) => {
-        #[derive(Debug, PartialEq, Eq, Clone)]
+        #[derive(Debug, PartialEq, Eq, Clone, Copy)]
         pub enum $name {
             $($variant),*
         }
@@ -62,6 +62,22 @@ pub_enum_str! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils;
+
+    #[test]
+    fn asset_is_normal() {
+        test_utils::is_normal::<Asset>()
+    }
+
+    #[test]
+    fn cadence_is_normal() {
+        test_utils::is_normal::<Cadence>()
+    }
+
+    #[test]
+    fn datatype_is_normal() {
+        test_utils::is_normal::<DataType>()
+    }
 
     #[test]
     fn test_as_str() {

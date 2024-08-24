@@ -30,10 +30,10 @@ impl Bucket {
     pub async fn get_object_to_file(&self, key: &str, file_path: &Path) -> Result<()> {
         // create parent dirs
         match file_path.parent() {
-            Some(path) if !path.exists() => fs::create_dir_all(path)
-                .await
-                .context("Failed to create directory")?,
-            None => return Err(anyhow!("{} has no parent", file_path.to_str().unwrap())),
+            Some(path) if !path.exists() => fs::create_dir_all(path).await.with_context(|| {
+                format!("Failed to create directory: {}", path.to_string_lossy())
+            })?,
+            None => return Err(anyhow!("{} has no parent", file_path.to_string_lossy())),
             _ => (),
         };
 
@@ -41,22 +41,32 @@ impl Bucket {
         self.bucket
             .get_object_to_writer(key, &mut output_file)
             .await
-            .context("Failed to write object to file")?;
-
+            .with_context(|| {
+                format!(
+                    "Could not download object to file: {} -> {}",
+                    key,
+                    file_path.to_string_lossy()
+                )
+            })?;
         Ok(())
     }
 
     pub async fn list_pairs(&self, path: &str) -> Result<Vec<Pair>> {
-        let path = if path.ends_with('/') {
+        let terminated_path = if path.ends_with('/') {
             path.to_owned()
         } else {
             format!("{}/", path)
         };
 
         self.bucket
-            .list(path, Some("/".to_string()))
+            .list(terminated_path, Some("/".to_string()))
             .await
-            .context("Failed to list S3 bucket objects")?
+            .with_context(|| {
+                anyhow!(
+                    "Failed to list S3 bucket objects from: {}/",
+                    path.trim_end_matches('/'),
+                )
+            })?
             .into_iter()
             .flat_map(|result| result.common_prefixes.unwrap_or_default())
             .map(|cp| {
@@ -67,7 +77,7 @@ impl Bucket {
     }
 
     pub async fn list_objects(&self, path: &str) -> Result<Vec<Object>> {
-        let path = if path.ends_with('/') {
+        let terminated_path = if path.ends_with('/') {
             path.to_owned()
         } else {
             format!("{}/", path)
@@ -75,9 +85,14 @@ impl Bucket {
 
         let objects = self
             .bucket
-            .list(path, Some("/".to_string()))
+            .list(terminated_path, Some("/".to_string()))
             .await
-            .context("Failed to list s3 bucket objects")?
+            .with_context(|| {
+                format!(
+                    "Failed to list s3 bucket objects from: {}/",
+                    path.trim_end_matches('/'),
+                )
+            })?
             .into_iter()
             .flat_map(|result| result.contents)
             .collect::<Vec<Object>>();
@@ -85,6 +100,22 @@ impl Bucket {
     }
 
     pub async fn read_object(&self, path: &str) -> Result<String> {
-        Ok(self.bucket.get_object(&path).await?.to_string()?)
+        self.bucket
+            .get_object(&path)
+            .await
+            .with_context(|| format!("Could not read object: {}", path))?
+            .to_string()
+            .with_context(|| format!("Could not convert object contents to String: {}", path))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils;
+
+    #[test]
+    fn bucket_is_normal() {
+        test_utils::is_normal::<Bucket>();
     }
 }
