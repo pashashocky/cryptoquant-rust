@@ -3,10 +3,10 @@ use std::time::Instant;
 use std::{sync::Arc, time::Duration};
 
 use anyhow::{anyhow, Context, Result};
-use clickhouse::inserter::{Inserter, Quantities};
+use clickhouse::inserter::Quantities;
 use clickhouse::{sql, Client, Row};
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Semaphore};
 use tokio_stream::StreamExt;
 
 use crate::{data::binance::file::Row as FileRow, utils::config, Downloader};
@@ -53,9 +53,7 @@ pub struct CHRow {
     /// Trade quantity in BASE
     qty: f32,
     /// Notional value; price * qty
-    quote_qty: f32,
-    /// Was this the best price available on the exchange?
-    is_best_match: bool,
+    notional: f32,
     /// Trade id
     id: u32,
 }
@@ -68,13 +66,13 @@ impl CHRow {
             side: !row.is_buyer_maker,
             price: row.price,
             qty: row.qty,
-            quote_qty: row.quote_qty,
-            is_best_match: row.is_best_match,
+            notional: row.quote_qty,
             id: row.id,
         }
     }
 }
 
+#[derive(Clone)]
 pub struct Table {
     client: Client,
     name: Arc<str>,
@@ -116,17 +114,20 @@ impl Table {
                 CREATE TABLE IF NOT EXISTS ?
                 (
                     time DateTime64(3, 'UTC') COMMENT 'Trade time in ms',
+                    id UInt32 COMMENT 'Trade id',
                     pair LowCardinality(String) COMMENT 'Pair being traded BASE ASSET IN DENOM',
                     side Boolean COMMENT 'Long=True; Short=False',
                     price Float32 COMMENT 'Asset price in DENOM',
                     qty Float32 COMMENT 'Trade QTY in BASE ASSET',
-                    quote_qty Float32 COMMENT 'price * qty; Notional value',
-                    is_best_match Boolean COMMENT 'Was this the best price available',
-                    id UInt32 COMMENT 'Trade id',
+                    notional Float32 COMMENT 'price * qty; Notional value',
                 )
-                ENGINE = MergeTree
-                PRIMARY KEY (time, pair)
-                ORDER BY (time, pair)
+                -- Deduplicates rows by key
+                ENGINE = ReplacingMergeTree
+                
+                -- There are duplicates on (time, pair) because multiple tx's can happen
+                -- at the same time, so we need id to ensure we don't miss rows.
+                PRIMARY KEY (time, id, pair)
+                ORDER BY (time, id, pair)
             ",
             )
             .bind(sql::Identifier(&self.name))
@@ -150,20 +151,30 @@ impl Table {
             Ok::<_, anyhow::Error>(())
         });
 
-        let mut inserter = self
-            .client
-            .inserter::<CHRow>(&self.name)?
-            .with_max_rows(100_000)
-            .with_period(Some(Duration::from_secs(15)));
-
-        let mut file_count = 0;
+        let mut handles = Vec::new();
         let mut stats = AddableQuantities::default();
+        let self_clone = Arc::new(self.clone());
+        // TODO: make configurable
+        let semaphore = Arc::new(Semaphore::new(10)); // 10 parallel tasks
+
+        // Threaded tasks
         while let Some(file) = rx.recv().await {
-            stats += self.index_file(&mut inserter, file).await?;
+            let permit = semaphore.clone().acquire_owned().await?;
+            let self_clone = Arc::clone(&self_clone);
+
+            let handle = tokio::spawn(async move {
+                let stats = self_clone.index_file(file).await?;
+                drop(permit);
+                Ok::<_, anyhow::Error>(stats)
+            });
+            handles.push(handle);
+        }
+        let mut file_count = 0;
+        for handle in handles {
+            stats += handle.await??;
             file_count += 1;
         }
 
-        stats += inserter.end().await?;
         if stats.rows > 0 {
             log::info!(
                 "[{}] Inserter summary: {} files, {} bytes, {} rows, {} transactions have been inserted",
@@ -177,11 +188,7 @@ impl Table {
         Ok(())
     }
 
-    pub async fn index_file(
-        &self,
-        inserter: &mut Inserter<CHRow>,
-        file: File,
-    ) -> Result<AddableQuantities> {
+    pub async fn index_file(&self, file: File) -> Result<AddableQuantities> {
         log::info!(
             "[{}] Indexing pair={}; file={}",
             self.name,
@@ -189,19 +196,28 @@ impl Table {
             file.path.to_string_lossy()
         );
 
+        // TODO: don't think we need inserter here -> it would be OK to use the regular
+        // `client.insert("table_name")` inserter
+        // https://github.com/ClickHouse/clickhouse-rs/tree/main?tab=readme-ov-file#insert-a-batch
+        let mut inserter = self
+            .client
+            .inserter::<CHRow>(&self.name)?
+            .with_max_rows(500_000) // TODO: configurable int
+            .with_period(Some(Duration::from_secs(15)));
+
         let mut tx: u16 = 0;
         let now = Instant::now();
         let mut stats = AddableQuantities::default();
         let mut records = file.records().await?;
 
-        // This works, but this is slow because it's a single indexing thread
         while let Some(row) = records.next().await {
             let row = row?;
             inserter.write(&CHRow::new(&file.pair, row))?;
             tx += 1;
 
-            // insert in batches of 1000
-            if tx.rem_euclid(1000) == 0 {
+            // insert in batches of 8192 -> capsule size
+            // TODO: configurable int
+            if tx.rem_euclid(8192) == 0 {
                 let local_stats = inserter.commit().await?;
                 if local_stats.rows > 0 {
                     log::debug!(
@@ -216,7 +232,8 @@ impl Table {
                 tx = 0;
             }
         }
-        log::debug!(
+        stats += inserter.end().await?; // close the commit
+        log::info!(
             "[{}] Indexed in: {:.2?}; pair={}; file={}",
             self.name,
             now.elapsed(),
