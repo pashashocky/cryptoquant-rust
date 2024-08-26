@@ -56,7 +56,7 @@ pub struct Row {
     #[serde(deserialize_with = "bool_from_str")]
     pub is_buyer_maker: bool,
     /// Was this the best price available on the exchange?
-    #[serde(deserialize_with = "bool_from_str")]
+    #[serde(skip)]
     pub is_best_match: bool,
 }
 
