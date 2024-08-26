@@ -107,6 +107,10 @@ impl File {
                 &self.path.to_string_lossy()
             )
         })?;
+        // TODO: We need a mechanism to verify that this file is not being downloaded
+        // by some other process / thread at this moment in time
+        // - check checksum
+        // - name files being downloaded as .download like in Chrome
         Ok(exists)
     }
 
