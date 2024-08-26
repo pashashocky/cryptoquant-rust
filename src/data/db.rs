@@ -40,7 +40,7 @@ impl AddAssign for AddableQuantities {
 }
 
 #[derive(Debug, Row, Serialize, Deserialize)]
-pub struct CHRow {
+pub struct TradesRow {
     /// Trade time in unix epoch to ms
     time: u64,
     /// Name of the pair traded
@@ -58,9 +58,9 @@ pub struct CHRow {
     id: u32,
 }
 
-impl CHRow {
+impl TradesRow {
     fn new(pair: &str, row: FileRow) -> Self {
-        CHRow {
+        TradesRow {
             time: row.time,
             pair: pair.to_owned(),
             side: !row.is_buyer_maker,
@@ -73,28 +73,24 @@ impl CHRow {
 }
 
 #[derive(Clone)]
-pub struct Table {
+pub struct TradesTable {
     client: Client,
     name: Arc<str>,
     downloader: Arc<Downloader>,
 }
 
-impl Table {
+// TODO: We likely want to wrap this functionality into a trait
+impl TradesTable {
     pub async fn new(database: &str, name: &str, downloader: Downloader) -> Result<Self> {
         let cfg = config::Config::create().clickhouse;
-        let mut client = Client::default()
+        let database = &database.to_uppercase();
+        let client = Client::default()
             .with_url(cfg.url)
             .with_user(cfg.user)
-            .with_password(cfg.password);
+            .with_password(cfg.password)
+            .with_database(create_database(database).await?);
 
-        let database = &database.to_uppercase();
-
-        client = match create_database(&client, database).await {
-            Ok(_) => client.with_database(database),
-            Err(e) => return Err(e),
-        };
-
-        Ok(Table {
+        Ok(TradesTable {
             client,
             name: name.to_ascii_uppercase().into(),
             downloader: Arc::new(downloader),
@@ -102,12 +98,6 @@ impl Table {
     }
 
     pub async fn create(&self) -> Result<()> {
-        // TODO: Remove
-        self.client
-            .query("DROP TABLE IF EXISTS ?")
-            .bind(sql::Identifier(&self.name))
-            .execute()
-            .await?;
         self.client
             .query(
                 "
@@ -152,12 +142,11 @@ impl Table {
         });
 
         let mut handles = Vec::new();
-        let mut stats = AddableQuantities::default();
         let self_clone = Arc::new(self.clone());
         // TODO: make configurable
         let semaphore = Arc::new(Semaphore::new(10)); // 10 parallel tasks
 
-        // Threaded tasks
+        // threaded tasks
         while let Some(file) = rx.recv().await {
             let permit = semaphore.clone().acquire_owned().await?;
             let self_clone = Arc::clone(&self_clone);
@@ -169,7 +158,10 @@ impl Table {
             });
             handles.push(handle);
         }
+
+        // collect stats
         let mut file_count = 0;
+        let mut stats = AddableQuantities::default();
         for handle in handles {
             stats += handle.await??;
             file_count += 1;
@@ -201,7 +193,7 @@ impl Table {
         // https://github.com/ClickHouse/clickhouse-rs/tree/main?tab=readme-ov-file#insert-a-batch
         let mut inserter = self
             .client
-            .inserter::<CHRow>(&self.name)?
+            .inserter::<TradesRow>(&self.name)?
             .with_max_rows(500_000) // TODO: configurable int
             .with_period(Some(Duration::from_secs(15)));
 
@@ -212,7 +204,7 @@ impl Table {
 
         while let Some(row) = records.next().await {
             let row = row?;
-            inserter.write(&CHRow::new(&file.pair, row))?;
+            inserter.write(&TradesRow::new(&file.pair, row))?;
             tx += 1;
 
             // insert in batches of 8192 -> capsule size
@@ -242,13 +234,27 @@ impl Table {
         );
         Ok(stats)
     }
+
+    pub async fn verify(&self) -> Result<()> {
+        // Should verify the table has valid data
+        // at the very least,
+        // the count of number of rows is equal
+        // to the sum of the highest pair (id + 1) for each pair (account for zero idx)
+        todo!("Implement verification");
+    }
 }
 
-async fn create_database(client: &Client, database: &str) -> Result<()> {
+async fn create_database(database: &str) -> Result<&str> {
+    let cfg = config::Config::create().clickhouse;
+    let client = Client::default()
+        .with_url(cfg.url)
+        .with_user(cfg.user)
+        .with_password(cfg.password);
     client
         .query("CREATE DATABASE IF NOT EXISTS ?")
         .bind(sql::Identifier(database))
         .execute()
         .await
-        .with_context(|| format!("Could not create database: {}", database))
+        .with_context(|| format!("Could not create database: {}", database))?;
+    Ok(database)
 }

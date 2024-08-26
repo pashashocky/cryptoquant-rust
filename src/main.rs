@@ -3,7 +3,7 @@ pub mod test_utils;
 pub mod utils;
 pub use crate::data::binance::data_types::{Asset, Cadence, DataType};
 pub use crate::data::binance::downloader::Downloader;
-pub use crate::data::db::Table;
+pub use crate::data::db::TradesTable;
 
 use std::env;
 use std::time::Instant;
@@ -29,7 +29,7 @@ async fn main() -> Result<()> {
     )?
     .with_pair_ends_with(&["USDC"]);
 
-    let table = Table::new("test", "trades_any_usdc", downloader).await?;
+    let table = TradesTable::new("test", "trades_any_usdc", downloader).await?;
     table.index().await?;
 
     log::info!("[main] Execution took: {:.2?}", now.elapsed());
