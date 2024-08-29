@@ -1,48 +1,25 @@
-use std::ops::AddAssign;
+use std::cmp;
+use std::ops::Deref;
 use std::time::Instant;
 use std::{sync::Arc, time::Duration};
 
-use anyhow::{anyhow, Context, Result};
-use clickhouse::inserter::Quantities;
+use anyhow::{anyhow, Result};
+use chrono::prelude::*;
 use clickhouse::{sql, Client, Row};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, Semaphore};
 use tokio_stream::StreamExt;
 
-use crate::{data::binance::file::Row as FileRow, utils::config, Downloader};
-
-use super::binance::file::File;
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct AddableQuantities {
-    /// The number of uncompressed bytes.
-    pub bytes: u64,
-    /// The number for rows (calls of [`Inserter::write`]).
-    pub rows: u64,
-    /// The number of nonempty transactions (calls of [`Inserter::commit`]).
-    pub transactions: u64,
-}
-
-impl AddAssign<Quantities> for AddableQuantities {
-    fn add_assign(&mut self, rhs: Quantities) {
-        self.bytes += rhs.bytes;
-        self.rows += rhs.rows;
-        self.transactions += rhs.transactions;
-    }
-}
-
-impl AddAssign for AddableQuantities {
-    fn add_assign(&mut self, rhs: Self) {
-        self.bytes += rhs.bytes;
-        self.rows += rhs.rows;
-        self.transactions += rhs.transactions;
-    }
-}
+use super::utils::create_client;
+use super::utils::AddableQuantities;
+use crate::data::binance::file::File;
+use crate::data::db::trades_index_log::{FileIndexLogRow, TradesIndexLogTable};
+use crate::{data::binance::file::Row as FileRow, Downloader};
 
 #[derive(Debug, Row, Serialize, Deserialize)]
 pub struct TradesRow {
     /// Trade time in unix epoch to ms
-    time: u64,
+    dt: u64,
     /// Name of the pair traded
     // Owned String is faster here than lifetime bound
     pair: String,
@@ -61,7 +38,7 @@ pub struct TradesRow {
 impl TradesRow {
     fn new(pair: &str, row: FileRow) -> Self {
         TradesRow {
-            time: row.time,
+            dt: row.time,
             pair: pair.to_owned(),
             side: !row.is_buyer_maker,
             price: row.price,
@@ -75,23 +52,18 @@ impl TradesRow {
 #[derive(Clone)]
 pub struct TradesTable {
     client: Client,
+    database: Arc<str>,
     name: Arc<str>,
     downloader: Arc<Downloader>,
 }
 
 // TODO: We likely want to wrap this functionality into a trait
+// but traits cannot define async functions, which makes this complicated?
 impl TradesTable {
     pub async fn new(database: &str, name: &str, downloader: Downloader) -> Result<Self> {
-        let cfg = config::Config::create().clickhouse;
-        let database = &database.to_uppercase();
-        let client = Client::default()
-            .with_url(cfg.url)
-            .with_user(cfg.user)
-            .with_password(cfg.password)
-            .with_database(create_database(database).await?);
-
         Ok(TradesTable {
-            client,
+            client: create_client(database).await?,
+            database: Arc::from(database),
             name: name.to_ascii_uppercase().into(),
             downloader: Arc::new(downloader),
         })
@@ -103,7 +75,7 @@ impl TradesTable {
                 "
                 CREATE TABLE IF NOT EXISTS ?
                 (
-                    time DateTime64(3, 'UTC') COMMENT 'Trade time in ms',
+                    dt DateTime64(3, 'UTC') COMMENT 'Trade datetime (dt) in ms',
                     id UInt32 COMMENT 'Trade id',
                     pair LowCardinality(String) COMMENT 'Pair being traded BASE ASSET IN DENOM',
                     side Boolean COMMENT 'Long=True; Short=False',
@@ -114,10 +86,10 @@ impl TradesTable {
                 -- Deduplicates rows by key
                 ENGINE = ReplacingMergeTree
                 
-                -- There are duplicates on (time, pair) because multiple tx's can happen
-                -- at the same time, so we need id to ensure we don't miss rows.
-                PRIMARY KEY (time, id, pair)
-                ORDER BY (time, id, pair)
+                -- There are duplicates on (dt, pair) because multiple tx's can happen
+                -- at the same datetime, so we need id to ensure we don't miss rows.
+                PRIMARY KEY (dt, id, pair)
+                ORDER BY (dt, id, pair)
             ",
             )
             .bind(sql::Identifier(&self.name))
@@ -202,8 +174,17 @@ impl TradesTable {
         let mut stats = AddableQuantities::default();
         let mut records = file.records().await?;
 
+        let mut start_id: u32 = u32::MAX;
+        let mut end_id: u32 = 0;
+        let mut start_dt: u64 = u64::MAX;
+        let mut end_dt: u64 = 0;
+
         while let Some(row) = records.next().await {
             let row = row?;
+            start_id = cmp::min(start_id, row.id);
+            end_id = cmp::max(end_id, row.id);
+            start_dt = cmp::min(start_dt, row.time);
+            end_dt = cmp::max(end_dt, row.time);
             inserter.write(&TradesRow::new(&file.pair, row))?;
             tx += 1;
 
@@ -232,6 +213,28 @@ impl TradesTable {
             file.pair,
             file.path.to_string_lossy()
         );
+
+        let index_log = TradesIndexLogTable::new(&self.database).await?;
+        index_log
+            .index_row(FileIndexLogRow {
+                filename: file
+                    .path
+                    .deref()
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into(),
+                start_id,
+                end_id,
+                start_period_dt: start_dt,
+                end_period_dt: end_dt,
+                database: self.database.to_string(),
+                table: self.name.to_string(),
+                num_rows: stats.rows as u32,
+                index_dt: Utc::now().timestamp_millis() as u64,
+            })
+            .await?;
+
         Ok(stats)
     }
 
@@ -242,19 +245,4 @@ impl TradesTable {
         // to the sum of the highest pair (id + 1) for each pair (account for zero idx)
         todo!("Implement verification");
     }
-}
-
-async fn create_database(database: &str) -> Result<&str> {
-    let cfg = config::Config::create().clickhouse;
-    let client = Client::default()
-        .with_url(cfg.url)
-        .with_user(cfg.user)
-        .with_password(cfg.password);
-    client
-        .query("CREATE DATABASE IF NOT EXISTS ?")
-        .bind(sql::Identifier(database))
-        .execute()
-        .await
-        .with_context(|| format!("Could not create database: {}", database))?;
-    Ok(database)
 }

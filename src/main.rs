@@ -3,7 +3,7 @@ pub mod test_utils;
 pub mod utils;
 pub use crate::data::binance::data_types::{Asset, Cadence, DataType};
 pub use crate::data::binance::downloader::Downloader;
-pub use crate::data::db::TradesTable;
+pub use crate::data::db::trades::TradesTable;
 
 use std::env;
 use std::time::Instant;
