@@ -4,18 +4,18 @@ use anyhow::Result;
 
 use super::{file_collection::FileCollection, s3::Bucket};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pair {
     pub prefix: Arc<str>,
     pub name: Arc<str>,
 }
 
 impl Pair {
-    pub fn new(prefix: &str, name: &str) -> Result<Self> {
-        Ok(Pair {
+    pub fn new(prefix: &str, name: &str) -> Self {
+        Pair {
             prefix: Arc::from(prefix),
             name: Arc::from(name),
-        })
+        }
     }
 
     pub async fn get_files(&self) -> Result<FileCollection> {
@@ -33,7 +33,17 @@ mod tests {
     use crate::test_utils;
 
     #[test]
-    fn pair_is_normal() {
+    fn test_pair_is_normal() {
         test_utils::is_normal::<Pair>();
+    }
+
+    #[test]
+    fn test_new_pair() {
+        let expected = Pair {
+            prefix: Arc::from("path/to/pair"),
+            name: Arc::from("BTCUSDC"),
+        };
+        let pair = Pair::new("path/to/pair", "BTCUSDC");
+        assert_eq!(expected, pair);
     }
 }
