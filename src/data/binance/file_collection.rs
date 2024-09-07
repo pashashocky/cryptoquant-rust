@@ -1,12 +1,11 @@
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
 use std::iter::FromIterator;
 
 use anyhow::{anyhow, Result};
 use futures::stream::StreamExt;
+use futures::Stream;
 use s3::serde_types::Object;
-use tokio::sync::mpsc::Sender;
-use tokio::sync::Semaphore;
 
 use super::file::File;
 
@@ -65,30 +64,18 @@ impl FileCollection {
         self.files.len()
     }
 
-    // TODO: make configurable semaphore
-    pub async fn download_with_channel(&self, tx: Option<Sender<File>>) -> Result<()> {
-        let num_semaphore = 50;
-        let semaphore = Arc::new(Semaphore::new(num_semaphore));
-
-        futures::stream::iter(&self.files)
-            .for_each_concurrent(num_semaphore, |file| {
-                let semaphore = semaphore.clone();
-                let tx = tx.clone();
-                async move {
-                    let _permit = semaphore.acquire().await.unwrap();
-                    match file.download().await {
-                        Ok(_) => {
-                            if let Some(tx) = tx {
-                                tx.send(file.clone()).await.unwrap()
-                            }
-                        }
-                        Err(e) => log::error!("Could not download file. {}", e),
+    pub fn download_stream(&self, num_semaphore: usize) -> impl Stream<Item = Result<File>> {
+        futures::stream::iter(self.files.clone())
+            .map(|file| async move {
+                match file.download().await {
+                    Ok(_) => Ok(file),
+                    Err(e) => {
+                        log::error!("Could not download file. {}", e);
+                        Err(anyhow::anyhow!("Failed to download file: {}", e))
                     }
                 }
             })
-            .await;
-
-        Ok(())
+            .buffer_unordered(num_semaphore)
     }
 }
 

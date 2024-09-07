@@ -15,6 +15,18 @@ pub struct AddableQuantities {
     pub transactions: u64,
 }
 
+impl std::ops::Add for AddableQuantities {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        Self {
+            bytes: self.bytes + other.bytes,
+            rows: self.rows + other.rows,
+            transactions: self.transactions + other.transactions,
+        }
+    }
+}
+
 impl AddAssign<Quantities> for AddableQuantities {
     fn add_assign(&mut self, rhs: Quantities) {
         self.bytes += rhs.bytes;
