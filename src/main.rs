@@ -33,7 +33,6 @@ async fn main() -> Result<()> {
     table.index().await?;
 
     log::info!("[main] Execution took: {:.2?}", now.elapsed());
-    log::info!("test")
 
     Ok(())
 }

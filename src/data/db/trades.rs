@@ -6,49 +6,14 @@ use std::{sync::Arc, time::Duration};
 use anyhow::{anyhow, Result};
 use chrono::prelude::*;
 use clickhouse::{sql, Client, Row};
-use futures::future::try_join_all;
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{mpsc, Semaphore};
-use tokio_stream::StreamExt;
 
 use super::utils::create_client;
 use super::utils::AddableQuantities;
 use crate::data::binance::file::File;
 use crate::data::db::trades_index_log::{FileIndexLogRow, TradesIndexLogTable};
 use crate::{data::binance::file::Row as FileRow, Downloader};
-
-#[derive(Debug, Row, Serialize, Deserialize)]
-pub struct TradesRow {
-    /// Trade time in unix epoch to ms
-    dt: u64,
-    /// Name of the pair traded
-    // Owned String is faster here than lifetime bound
-    pair: String,
-    /// Long=true; Short=False
-    side: bool,
-    /// Execution price in DENOM
-    price: f32,
-    /// Trade quantity in BASE
-    qty: f32,
-    /// Notional value; price * qty
-    notional: f32,
-    /// Trade id
-    id: u32,
-}
-
-impl TradesRow {
-    fn new(pair: &str, row: FileRow) -> Self {
-        TradesRow {
-            dt: row.time,
-            pair: pair.to_owned(),
-            side: !row.is_buyer_maker,
-            price: row.price,
-            qty: row.qty,
-            notional: row.quote_qty,
-            id: row.id,
-        }
-    }
-}
 
 #[derive(Clone)]
 pub struct TradesTable {
@@ -60,6 +25,7 @@ pub struct TradesTable {
 
 // TODO: We likely want to wrap this functionality into a trait
 // but traits cannot define async functions, which makes this complicated?
+// ==> use async_traits crate
 impl TradesTable {
     pub async fn new(database: &str, name: &str, downloader: Downloader) -> Result<Self> {
         Ok(TradesTable {
@@ -100,53 +66,40 @@ impl TradesTable {
     }
 
     pub async fn index(&self) -> Result<()> {
-        // make sure table exists
+        // TODO: Db initialization procedure otw this will get called multiple times
         self.create().await?;
 
-        let (tx, mut rx) = mpsc::channel(10);
         let downloader = Arc::clone(&self.downloader);
+        let pairs = downloader.get_pairs().await?;
+        let files = downloader.get_files(&pairs).await?;
+        let files_stream = files.download_stream(50);
 
-        // fetch files
-        tokio::spawn(async move {
-            let pairs = downloader.get_pairs().await?;
-            let files = downloader.get_files(&pairs).await?;
-            files.download_with_channel(Some(tx)).await?;
-            Ok::<_, anyhow::Error>(())
-        });
-
-        let mut handles = Vec::new();
         let self_clone = Arc::new(self.clone());
-        // TODO: make configurable
-        let semaphore = Arc::new(Semaphore::new(10)); // 10 parallel tasks
-
-        // threaded tasks
-        while let Some(file) = rx.recv().await {
-            let semaphore = semaphore.clone();
-            let self_clone = Arc::clone(&self_clone);
-
-            let handle = tokio::spawn(async move {
-                let _permit = semaphore.acquire_owned().await?;
-                let stats = self_clone.index_file(file).await?;
-                Ok::<_, anyhow::Error>(stats)
-            });
-            handles.push(handle);
-        }
-
-        let results = try_join_all(handles).await?;
-
-        // collect stats
-        let mut file_count = 0;
-        let mut stats = AddableQuantities::default();
-        for handle in results {
-            stats += handle?;
-            file_count += 1;
-        }
+        let stats = files_stream
+            .map(|file_result| {
+                let self_clone = Arc::clone(&self_clone);
+                tokio::spawn(async move {
+                    match file_result {
+                        Ok(file) => self_clone.index_file(file).await,
+                        Err(_) => Ok(AddableQuantities::default()),
+                    }
+                })
+            })
+            .buffer_unordered(10) // Process up to 10 tasks concurrently
+            .filter_map(|r| async { r.ok() })
+            .fold(AddableQuantities::default(), |mut acc, r| async move {
+                if let Ok(quantities) = r {
+                    acc += quantities;
+                }
+                acc
+            })
+            .await;
 
         if stats.rows > 0 {
             log::info!(
-                "[{}] Inserter summary: {} files, {} bytes, {} rows, {} transactions have been inserted",
+                "[{}] Inserter summary: {} files, {} bytes, {} rows, {} transactions inserted",
                 self.name,
-                file_count,
+                files.len(), // TODO: count is incorrect here as some files could have failed
                 stats.bytes,
                 stats.rows,
                 stats.transactions,
@@ -156,6 +109,7 @@ impl TradesTable {
     }
 
     pub async fn index_file(&self, file: File) -> Result<AddableQuantities> {
+        // TODO: refactor
         log::info!(
             "[{}] Indexing pair={}; file={}",
             self.name,
@@ -247,5 +201,38 @@ impl TradesTable {
         // the count of number of rows is equal
         // to the sum of the highest pair (id + 1) for each pair (account for zero idx)
         todo!("Implement verification");
+    }
+}
+
+#[derive(Debug, Row, Serialize, Deserialize)]
+pub struct TradesRow {
+    /// Trade time in unix epoch to ms
+    dt: u64,
+    /// Name of the pair traded
+    // Owned String is faster here than lifetime bound
+    pair: String,
+    /// Long=true; Short=False
+    side: bool,
+    /// Execution price in DENOM
+    price: f32,
+    /// Trade quantity in BASE
+    qty: f32,
+    /// Notional value; price * qty
+    notional: f32,
+    /// Trade id
+    id: u32,
+}
+
+impl TradesRow {
+    fn new(pair: &str, row: FileRow) -> Self {
+        TradesRow {
+            dt: row.time,
+            pair: pair.to_owned(),
+            side: !row.is_buyer_maker,
+            price: row.price,
+            qty: row.qty,
+            notional: row.quote_qty,
+            id: row.id,
+        }
     }
 }

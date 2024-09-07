@@ -114,9 +114,9 @@ impl File {
         Ok(exists)
     }
 
-    pub async fn download(&self) -> Result<()> {
+    pub async fn download(&self) -> Result<&Self> {
         if self.is_downloaded().await? {
-            return Ok(());
+            return Ok(self);
         }
 
         // TODO: download into /tmp first and move to prevent unfinished downloads
@@ -139,7 +139,7 @@ impl File {
             self.path.to_string_lossy()
         );
 
-        Ok(())
+        Ok(self)
     }
 
     pub async fn records<'r>(
