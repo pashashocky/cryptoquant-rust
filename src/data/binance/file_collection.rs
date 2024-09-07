@@ -10,7 +10,7 @@ use tokio::sync::Semaphore;
 
 use super::file::File;
 
-#[derive(Default, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct FileCollection {
     files: Vec<File>,
 }

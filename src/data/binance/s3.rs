@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::{anyhow, Context, Result};
-use s3::{creds::Credentials, serde_types::Object, Bucket as S3Bucket};
+use s3::{serde_types::Object, Bucket as S3Bucket};
 use tokio::fs;
 
 use crate::utils::config;
@@ -16,10 +16,8 @@ pub struct Bucket {
 impl Bucket {
     pub fn new() -> Result<Self> {
         let config = config::Config::create();
-        let region = "ap-northeast-1".parse().context("Failed to parse region")?;
-        let credentials =
-            Credentials::anonymous().context("Failed to create anonymous credentials")?;
-        let mut bucket = S3Bucket::new(config.binance.bucket_name.as_str(), region, credentials)
+        let region = "ap-northeast-1".parse().unwrap();
+        let mut bucket = S3Bucket::new_public(config.binance.bucket_name.as_str(), region)
             .context("Failed to create S3 bucket")?
             .with_path_style();
         bucket.set_listobjects_v2();
@@ -58,7 +56,8 @@ impl Bucket {
             format!("{}/", path)
         };
 
-        self.bucket
+        Ok(self
+            .bucket
             .list(terminated_path, Some("/".to_string()))
             .await
             .with_context(|| {
@@ -73,7 +72,7 @@ impl Bucket {
                 let pair_name = cp.prefix.rsplit_terminator('/').next().unwrap_or_default();
                 Pair::new(&cp.prefix, pair_name)
             })
-            .collect::<Result<Vec<_>>>()
+            .collect::<Vec<_>>())
     }
 
     pub async fn list_objects(&self, path: &str) -> Result<Vec<Object>> {

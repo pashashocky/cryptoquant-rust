@@ -6,6 +6,7 @@ use std::{sync::Arc, time::Duration};
 use anyhow::{anyhow, Result};
 use chrono::prelude::*;
 use clickhouse::{sql, Client, Row};
+use futures::future::try_join_all;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, Semaphore};
 use tokio_stream::StreamExt;
@@ -120,22 +121,24 @@ impl TradesTable {
 
         // threaded tasks
         while let Some(file) = rx.recv().await {
-            let permit = semaphore.clone().acquire_owned().await?;
+            let semaphore = semaphore.clone();
             let self_clone = Arc::clone(&self_clone);
 
             let handle = tokio::spawn(async move {
+                let _permit = semaphore.acquire_owned().await?;
                 let stats = self_clone.index_file(file).await?;
-                drop(permit);
                 Ok::<_, anyhow::Error>(stats)
             });
             handles.push(handle);
         }
 
+        let results = try_join_all(handles).await?;
+
         // collect stats
         let mut file_count = 0;
         let mut stats = AddableQuantities::default();
-        for handle in handles {
-            stats += handle.await??;
+        for handle in results {
+            stats += handle?;
             file_count += 1;
         }
 
