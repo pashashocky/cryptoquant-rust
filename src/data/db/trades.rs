@@ -55,6 +55,7 @@ impl TradesTable {
                 
                 -- There are duplicates on (dt, pair) because multiple tx's can happen
                 -- at the same datetime, so we need id to ensure we don't miss rows.
+                -- TODO: maybe change to (pair, dt, id) for ASC cardinality of cols
                 PRIMARY KEY (dt, id, pair)
                 ORDER BY (dt, id, pair)
             ",
